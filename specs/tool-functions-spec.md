@@ -70,7 +70,15 @@ likely match for clean user input. Aliases are the broadest net, so they go last
 *Aliases are stored as a list of strings. How will you check if the normalized input matches any alias in the list? Write your approach in pseudocode or plain English.*
 
 ```
-[your answer here]
+Lowercase (and strip) every alias in the plant's "aliases" list, then test
+membership:
+
+    normalized in [alias.strip().lower() for alias in plant["aliases"]]
+
+The aliases in the data are already lowercase, but normalizing both sides makes
+the match casing/whitespace-insensitive and robust to future data edits. Using
+`in` on the list is a clean exact-match test (no partial/substring matching, so
+"ivy" will not accidentally match "devil's ivy").
 ```
 
 ---
@@ -80,7 +88,15 @@ likely match for clean user input. Aliases are the broadest net, so they go last
 *When a plant isn't found, the agent will read your message and use it to decide what to tell the user. Write the exact string you'll return — make it useful to the agent, not just to a human reading logs.*
 
 ```
-[your answer here]
+"No plant matching '<normalized>' is in the care database. Tell the user this
+specific plant isn't in your database, then offer general houseplant guidance
+based on what they describe. Do not invent specific care figures (watering
+frequency, temperature ranges, etc.)."
+
+This is an instruction to the agent, not a human-facing log line: it both
+states the fact (not in DB) and prescribes the desired behavior (acknowledge +
+degrade gracefully + don't hallucinate numbers), which directly supports the
+Milestone 3 graceful-degradation goal.
 ```
 
 ---
@@ -91,17 +107,23 @@ likely match for clean user input. Aliases are the broadest net, so they go last
 
 **Test: does `"devil's ivy"` return the pothos entry?**
 ```
-[yes / no — if no, describe what happened]
+Yes — matched via the alias list, returns "Pothos".
 ```
 
 **Test: does `"SNAKE PLANT"` return the snake plant entry?**
 ```
-[yes / no — if no, describe what happened]
+Yes — display-name match is case-insensitive, returns "Snake Plant".
+"  ZZ Plant  " (extra whitespace) and "mother-in-law's tongue" (alias) also
+resolve correctly.
 ```
 
 **One edge case you discovered while implementing:**
 ```
-[your answer here]
+The tool definition in agent.py advertises scientific-name lookups
+(e.g. "Monstera deliciosa"), but scientific_name is NOT in the spec's 3-step
+search order and is not duplicated into the aliases list. Relying only on
+key/display_name/aliases would silently fail that advertised case, so I added
+an explicit scientific_name comparison in the scan loop.
 ```
 
 ---
@@ -183,12 +205,13 @@ The full season dict from `_season_data`, plus a `detected_season` boolean. Exam
 
 **Test: does calling with `season=None` return the correct season for the current month?**
 ```
-Current month: [month]
-Expected season: [season]
-Returned season: [season]
+Current month: June
+Expected season: summer
+Returned season: summer (detected_season=True)
 ```
 
 **Test: does calling with `season="winter"` return winter data regardless of the current month?**
 ```
-[yes / no]
+Yes — passing season="winter" returns the Winter dict with detected_season=False,
+even though the current month (June) auto-detects to summer.
 ```

@@ -1,7 +1,16 @@
 import json
+import sys
 from groq import Groq
 from config import GROQ_API_KEY, LLM_MODEL, MAX_TOOL_ROUNDS
 from tools import lookup_plant, get_seasonal_conditions
+
+# The debug traces below print Unicode arrows/emoji. On a default Windows
+# console (cp1252) those raise UnicodeEncodeError, which would crash a tool
+# call. Reconfigure stdout to UTF-8 so the traces are always safe to print.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
 
 _client = Groq(api_key=GROQ_API_KEY)
 
@@ -100,32 +109,74 @@ def dispatch_tool(tool_name: str, tool_args: dict) -> str:
 # Agent loop
 # ──────────────────────────────────────────────
 
+FALLBACK_RESPONSE = (
+    "Sorry — I ran into a problem answering that. Please try rephrasing your question."
+)
+
+
 def run_agent(user_message: str, history: list) -> str:
     """
     Run the plant care agent for one user turn and return its response.
 
-    TODO — Milestone 2:
+    Builds the messages list (system prompt + conversation history + new user
+    message), then runs the tool-calling loop: call the LLM, execute any tool
+    calls it requests, feed the results back, and repeat until the LLM produces a
+    text answer with no further tool calls — or until MAX_TOOL_ROUNDS is hit.
 
-    The agent loop follows a specific pattern that you'll implement here. Read
-    specs/agent-loop-spec.md carefully before writing any code — understand the
-    full loop before implementing any part of it.
-
-    The loop works like this:
-      1. Build a messages list: system prompt + conversation history + new user message
-      2. Call the LLM with messages and TOOL_DEFINITIONS
-      3. If the response contains tool_calls:
-           a. Append the assistant message (with tool_calls) to messages
-           b. For each tool call: execute via dispatch_tool(), append the result
-           c. Call the LLM again with the updated messages
-           d. Repeat until no more tool_calls (or MAX_TOOL_ROUNDS is reached)
-      4. Return the final text response
-
-    Key details to get right:
-      - The assistant message must be appended BEFORE tool results
-      - Tool result messages use role="tool" with a tool_call_id field
-      - Append the assistant's message object directly (not just its content)
-      - The history format from Gradio: list of [user_message, assistant_message] pairs
-
-    Before writing code, complete specs/agent-loop-spec.md.
+    See specs/agent-loop-spec.md for the design rationale.
     """
-    return "🌱 Agent not yet implemented. Complete Milestone 2 to activate the Plant Advisor."
+    # 1. Build the messages list: system prompt + replayed history + new message.
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    for user_msg, assistant_msg in history:
+        messages.append({"role": "user", "content": user_msg})
+        if assistant_msg:
+            messages.append({"role": "assistant", "content": assistant_msg})
+
+    messages.append({"role": "user", "content": user_message})
+
+    try:
+        # 2. Tool-calling loop, capped at MAX_TOOL_ROUNDS iterations.
+        for _ in range(MAX_TOOL_ROUNDS):
+            response = _client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=messages,
+                tools=TOOL_DEFINITIONS,
+                tool_choice="auto",
+            )
+            assistant_message = response.choices[0].message
+
+            # Termination (a): no tool calls means the LLM has a final answer.
+            if not assistant_message.tool_calls:
+                return assistant_message.content or FALLBACK_RESPONSE
+
+            # The assistant message (with tool_calls) MUST be appended before
+            # the tool results that respond to it.
+            messages.append(assistant_message)
+
+            for tool_call in assistant_message.tool_calls:
+                tool_name = tool_call.function.name
+                # The model sometimes sends "null"/""/None for a no-arg call,
+                # which json.loads turns into None. Coerce to an empty dict so
+                # dispatch_tool always receives a mapping.
+                tool_args = json.loads(tool_call.function.arguments or "{}") or {}
+                tool_result = dispatch_tool(tool_name, tool_args)
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": tool_result,
+                })
+
+        # Termination (b): hit MAX_TOOL_ROUNDS while still calling tools. Make
+        # one final call forcing a text answer so the user always gets a reply.
+        final = _client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=messages,
+            tool_choice="none",
+        )
+        return final.choices[0].message.content or FALLBACK_RESPONSE
+
+    except Exception as e:
+        print(f"  [agent error] {e}")
+        return FALLBACK_RESPONSE

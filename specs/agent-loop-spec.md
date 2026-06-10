@@ -122,7 +122,22 @@ for tool_call in assistant_message.tool_calls:
 *The loop should stop when: (a) the LLM returns a response with no tool calls, OR (b) the MAX_TOOL_ROUNDS limit is reached. Describe how you will detect each condition and what you will return in each case.*
 
 ```
-[your answer here]
+The loop is a `for _ in range(MAX_TOOL_ROUNDS)` so it can run at most
+MAX_TOOL_ROUNDS iterations.
+
+(a) No-more-tools: after each LLM call, check `assistant_message.tool_calls`.
+    If it is falsy (None or empty), the LLM has produced its final answer —
+    return `assistant_message.content` immediately (falling back to a
+    user-readable message if content is somehow empty).
+
+(b) Round limit: if the loop completes all MAX_TOOL_ROUNDS iterations and the
+    LLM was still requesting tools, control falls past the loop. We then make
+    one final LLM call with `tool_choice="none"` to force a plain text answer
+    using everything gathered so far, and return that content. This guarantees
+    the user always gets a reply instead of a dangling tool request.
+
+Any exception during the loop is caught and converted to a fixed fallback
+string, so run_agent() never returns empty or raises into the UI.
 ```
 
 ---
@@ -132,7 +147,13 @@ for tool_call in assistant_message.tool_calls:
 *Once the loop exits because there are no more tool calls, how do you extract the text content from the response object? What field holds the string you should return?*
 
 ```
-[your answer here]
+response.choices[0].message.content
+
+The response has a `choices` list; index 0 is the relevant completion. Its
+`.message` is the assistant message object, and `.content` holds the final
+text string. (When the message instead carries tool_calls, `.content` is
+typically None — which is exactly why we only read `.content` once tool_calls
+is empty.)
 ```
 
 ---
@@ -144,20 +165,30 @@ for tool_call in assistant_message.tool_calls:
 **Trace of a working agent turn (what tools were called and in what order):**
 
 ```
-Query: "How should I care for my calathea?"
-Round 1 tool call: [tool name, args]
-Round 2 tool call: [tool name, args] (if any)
-Final response: [brief description]
+Query: "How often should I water my snake plant in winter?"
+Round 1 tool call: lookup_plant({"plant_name": "snake plant"})  -> found, returns Snake Plant care dict
+Round 1 tool call: get_seasonal_conditions({"season": "winter"}) -> Winter dict
+  (the model requested both tools in the same round, in parallel)
+Round 2: no tool calls — LLM produces final text
+Final response: Grounded answer combining the plant's watering range with winter
+                guidance ("once a month or less," reduce watering, no fertilizer).
 ```
 
 **What happens when you ask about a plant that isn't in the database?**
 
 ```
-[describe the behavior you observed]
+lookup_plant returns {"found": False, ...} with an instruction message. The agent
+acknowledges the plant isn't in its database and offers general guidance without
+inventing specific care figures — e.g. asking about "string of pearls" yields a
+graceful "that's not in my database, but here's general advice" response.
 ```
 
 **One thing about the tool call API that surprised you:**
 
 ```
-[your answer here]
+Two things: (1) the model can request multiple tool calls in a single assistant
+message (parallel tool calls), so the loop must iterate over ALL of
+assistant_message.tool_calls, not just the first. (2) For a no-argument call the
+model may send function.arguments as the string "null" (not "{}"), which
+json.loads turns into None — so the arguments must be coerced to {} before use.
 ```
